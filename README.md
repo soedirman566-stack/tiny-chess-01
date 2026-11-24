@@ -2,60 +2,54 @@
 [![rank](https://make.fun/badge/tiny-chess-01/soedirman566-stack/tiny-chess-01/rank.svg)](https://make.fun/bounty/tiny-chess-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=tiny-chess-01)
 [![reward](https://make.fun/badge/tiny-chess-01/soedirman566-stack/tiny-chess-01/reward.svg)](https://make.fun/bounty/tiny-chess-01?utm_source=github&utm_medium=readme&utm_campaign=tiny-chess-01)
 
-# tiny-chess-01 — a full chess engine in a single small Python file
+# tiny-chess-01 — a chess engine in 4 KB of Python (v3)
 
-This repository holds a complete, legal-move chess engine in Python,
-squeezed into a strict size budget. The readable source lives in
-`engine.py`; the submitted entrypoint, `main.py`, is that source
-packed with the make.fun kit's `compress` command: 3,511 bytes, under
-the 4 KB entrypoint cap.
+This is a complete, self-contained chess engine written in Python and squeezed
+into a single file. The board uses the classic 0x88 representation: one list of
+128 slots where the off-board half of the array makes edge detection a single
+bitwise test, so move generation stays branch-light even in an interpreted
+language.
 
-The board is the classic 0x88 representation: a 128-square array where
-the off-board test is a single AND against 0x88, keeping move
-generation branch-light. Pieces live in per-side lists with an index
-array, so making and unmaking a move touches only the squares involved.
-Evaluation is incremental — two
-accumulators track middlegame and endgame scores blended by a tapered
-phase weight, and the piece-square tables are decoded at startup from
-a compact packed table rather than stored as literals.
+Evaluation is incremental and tapered. Every piece carries two piece-square
+tables, one tuned for the middlegame and one for the endgame, and the engine
+keeps running sums for both phases plus a material counter as pieces are
+placed, moved and captured. The final score blends the two table sums by how
+much material remains on the board. The tables themselves are not stored as
+Python literals — they are decoded at startup from one packed byte table,
+which saves well over a kilobyte of source.
 
-Search is a negamax alpha-beta with iterative deepening over a fixed
-budget of 80,000 nodes. Positions are hashed with Zobrist keys from a
-seeded generator, and a 65,536-entry transposition table caches depth,
-bound flags and best moves.
-Move ordering tries the table move first, then captures by MVV-LVA,
-then promotions. At the leaves, a capture-only quiescence search keeps
-horizon effects from poisoning the static score, and when the side to
-move is in check all evasions are searched.
+Search is a negamax alpha-beta with iterative deepening up to an 80,000-node
+budget per move. Positions are hashed with Zobrist keys (seeded from a fixed
+PRNG so runs are reproducible) and cached in a 65,536-entry transposition
+table that stores depth, bound type and the best move. Move ordering tries
+the table move first, then captures by MVV-LVA, then promotions, then quiet
+moves that caused cutoffs before. Late quiet moves are reduced, and at the
+horizon a capture-only quiescence search settles tactics before the static
+evaluation is trusted.
 
 ## How it plays
 
-The engine talks to the grading environment over HTTP. It reads the
-`MAKEFUN_ENV_URL` environment variable on startup and, if one is set,
-loops asking the server for the current game; whenever the server says
-it is our turn it parses the FEN, runs the search, and posts the chosen
-move back in coordinate notation. The board, hash key and evaluation
-accumulators are rebuilt from scratch by the FEN loader for every
-position, so nothing leaks from one game into the next.
+The engine talks to the make.fun environment over HTTP. When the
+`MAKEFUN_ENV_URL` variable is set, it polls the server for a game, receives
+the position as FEN together with the list of legal moves, answers with its
+chosen move in coordinate notation, and repeats until the server reports the
+game is done. If the search ever produced a move outside the legal list, it
+falls back to the first legal move instead of failing.
 
-## Designing under a size budget
+## Living inside the size budget
 
-Four kilobytes is not much room, so every feature had to pay rent:
-names collapse to one or two letters, tables ride inside a packed
-string, and anything that could not prove its strength in testing was
-cut.
+The entry is capped at 4,096 bytes for the main file and 8,192 bytes for the
+whole repository, so the readable source is packed with the make.fun kit's
+own `compress` command into a 3,511-byte `main.py`. Every design choice —
+the packed evaluation tables, one-letter hot-path names, the 0x88 board —
+exists to buy playing strength per byte.
 
 ## What changed in v3
 
-Version 3 keeps the v1/v2 skeleton — same board, same evaluation, same
-80,000-node budget — and adds two search improvements that earn their
-bytes. Null-move pruning lets the search skip a move when the static
-score is already above beta and the side to move has real material:
-if giving the opponent a free move still fails high, the subtree is
-cut at reduced depth. Killer-move ordering remembers, per ply, two
-quiet moves that recently caused beta cutoffs and tries them earlier
-among the quiet moves. Earlier experiments with a bishop-pair bonus and
-quiescence delta pruning were measured, found neutral to negative, and
-removed; the shipped combination is the one that beat the previous
-version in direct practice gauntlets. The packed entry remains fully
-deterministic — the same position always produces the same move.
+Two search improvements were added without growing the node budget.
+Null-move pruning: when the static evaluation already exceeds beta and the
+side to move has non-pawn material, the engine first checks whether giving
+the opponent a free move still fails high, and skips the full search when it
+does. Killer-move ordering: the two quiet moves that most recently caused a
+beta cutoff at each ply are tried early among the quiet moves, which makes
+the alpha-beta tree noticeably narrower in practice.
